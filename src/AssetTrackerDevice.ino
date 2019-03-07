@@ -9,6 +9,7 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055_Photon.h>
 #include <Adafruit_MCP9808.h>
+#include <Adafruit_SSD1306.h>
 
 #include "Particle.h"
 
@@ -16,13 +17,15 @@ SYSTEM_MODE(AUTOMATIC);
 SYSTEM_THREAD(ENABLED);
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
+#define BNO055_SAMPLERATE_DELAY_MS (1000)
+
 Adafruit_MCP9808 mcp = Adafruit_MCP9808();
+
+#define OLED_RESET D4
+Adafruit_SSD1306 display(OLED_RESET);
 
 // what's the name of the hardware serial port?
 #define GPSSerial Serial1
-
-// What's the address of the display?
-#define OLED_ADDR 0x3C
 
 // What ports are we using for GPIO input?
 int measurement1Pin = A0;
@@ -45,6 +48,10 @@ Adafruit_GPS GPS(&GPSSerial);
 // You can also change this remotely using the Particle.function "tmode" defined in setup()
 int transmittingData = 1;
 
+// Used to manage screen updates
+long lastScreenUpdate = 0;
+float intervalScreenupdate = 2000;
+
 // Used to keep track of the last time we published data
 long lastPublish = 0;
 
@@ -64,6 +71,16 @@ int transmitMode(String command)
 {
   transmittingData = atoi(command);
   return 1;
+}
+
+void displayTelemetry(void)
+{
+  // Reset the timer
+  lastScreenUpdate = millis();
+  // display.clearDisplay();
+  // display.setCursor(0, 0);
+  // display.println("T1: " + String(mcp.readTempC(), 2));
+  // display.display();
 }
 
 // Actively ask for a full fix reading if you're impatient.
@@ -86,9 +103,84 @@ int publishFix(String command)
   return 1;
 }
 
+/**************************************************************************/
+/*
+    Display sensor calibration status
+    */
+/**************************************************************************/
+void displayCalStatus(void)
+{
+  /* Get the four calibration values (0..3) */
+  /* Any sensor data reporting 0 should be ignored, */
+  /* 3 means 'fully calibrated" */
+  uint8_t system, gyro, accel, mag;
+  system = gyro = accel = mag = 0;
+  bno.getCalibration(&system, &gyro, &accel, &mag);
+
+  /* The data should be ignored until the system calibration is > 0 */
+  Serial.print("\t");
+  if (!system)
+  {
+    Serial.print("! ");
+  }
+
+  /* Display the individual values */
+  Serial.print("Sys:");
+  Serial.print(system, DEC);
+  Serial.print(" G:");
+  Serial.print(gyro, DEC);
+  Serial.print(" A:");
+  Serial.print(accel, DEC);
+  Serial.print(" M:");
+  Serial.print(mag, DEC);
+}
+
+/**************************************************************************/
+/*
+    Display the raw calibration offset and radius data
+    */
+/**************************************************************************/
+void displaySensorOffsets(const adafruit_bno055_offsets_t &calibData)
+{
+  Serial.print("Accelerometer: ");
+  Serial.print(calibData.accel_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.accel_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.accel_offset_z);
+  Serial.print(" ");
+
+  Serial.print("\nGyro: ");
+  Serial.print(calibData.gyro_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.gyro_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.gyro_offset_z);
+  Serial.print(" ");
+
+  Serial.print("\nMag: ");
+  Serial.print(calibData.mag_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.mag_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.mag_offset_z);
+  Serial.print(" ");
+
+  Serial.print("\nAccel Radius: ");
+  Serial.print(calibData.accel_radius);
+
+  Serial.print("\nMag Radius: ");
+  Serial.print(calibData.mag_radius);
+}
+
 // setup() runs once, when the device is first turned on.
 void setup()
 {
+
+  // These functions exposed via the cloud API
+  Particle.function("tmode", transmitMode);
+  Particle.function("fix", publishFix);
+
   // connect at 115200 so we can read the GPS fast enough and echo without dropping chars
   // also spit it out
   Serial.begin(115200);
@@ -108,51 +200,108 @@ void setup()
   // Request updates on antenna status, comment out to keep quiet
   GPS.sendCommand(PGCMD_ANTENNA);
 
-  /* Initialize the BNO55 */
-  while (!bno.begin())
-  {
-    /* There was a problem detecting the BNO055 ... check your connections */
-    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
-    delay(1000);
-  }
-  bno.setExtCrystalUse(true);
-
   // MCP9808 sensor setup
   while (!mcp.begin())
   {
     Serial.println("Ooops, no MCP9808 detected ... Check your wiring or I2C ADDR");
     delay(1000);
   }
-  // mcp.setResolution(1);
 
-  // // Set up the display
-  // display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
-  // display.clearDisplay();
-  // display.display();
+  /* BNO55 sensor setup */
+  Serial.println("Orientation Sensor Test");
+  Serial.println("");
+  if (!bno.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    while (1)
+      ;
+  }
 
-  // // display a pixel in each corner of the screen
-  // display.drawPixel(0, 0, WHITE);
-  // display.drawPixel(127, 0, WHITE);
-  // display.drawPixel(0, 63, WHITE);
-  // display.drawPixel(127, 63, WHITE);
+  int eeAddress = 0;
+  long bnoID;
+  bool foundCalib = false;
 
-  // // display a line of text
-  // display.setTextSize(1);
-  // display.setTextColor(WHITE);
-  // display.setCursor(27, 30);
-  // display.print("Hello, world!");
+  EEPROM.get(eeAddress, bnoID);
 
-  // // update display with all of the above graphics
-  // display.display();
+  adafruit_bno055_offsets_t calibrationData;
+  sensor_t sensor;
 
-  // These functions exposed via the cloud API
-  Particle.function("tmode", transmitMode);
-  Particle.function("fix", publishFix);
+  /*
+    *  Look for the sensor's unique ID at the beginning oF EEPROM.
+    *  This isn't foolproof, but it's better than nothing.
+    */
+  bno.getSensor(&sensor);
+
+  if (bnoID != sensor.sensor_id)
+  {
+    Serial.println("\nNo Calibration Data for this sensor exists in EEPROM");
+  }
+  else
+  {
+    Serial.println("\nFound calibration in EEPROM, loading into BNO55.");
+    eeAddress += sizeof(long);
+    EEPROM.get(eeAddress, calibrationData);
+    bno.setSensorOffsets(calibrationData);
+    foundCalib = true;
+    delay(1000);
+  }
+
+  //Crystal must be configured AFTER loading calibration data into BNO055.
+  bno.setExtCrystalUse(true);
+
+  sensors_event_t event;
+  bno.getEvent(&event);
+  if (!foundCalib)
+  {
+    Serial.println("Please Calibrate Sensor: ");
+    while (!bno.isFullyCalibrated())
+    {
+      bno.getEvent(&event);
+
+      Serial.print("X: ");
+      Serial.print(event.orientation.x, 4);
+      Serial.print("\tY: ");
+      Serial.print(event.orientation.y, 4);
+      Serial.print("\tZ: ");
+      Serial.print(event.orientation.z, 4);
+
+      /* Optional: Display calibration status */
+      displayCalStatus();
+
+      /* New line for the next sample */
+      Serial.println("");
+
+      /* Wait the specified delay before requesting new data */
+      delay(BNO055_SAMPLERATE_DELAY_MS);
+    }
+  }
+
+  Serial.println("--------------------------------");
+  Serial.println("Fully Calibrated: ");
+  adafruit_bno055_offsets_t newCalib;
+  bno.getSensorOffsets(newCalib);
+  displaySensorOffsets(newCalib);
+
+  Serial.println("\n\nStoring calibration data to EEPROM...");
+
+  eeAddress = 0;
+  bno.getSensor(&sensor);
+  bnoID = sensor.sensor_id;
+
+  EEPROM.put(eeAddress, bnoID);
+
+  eeAddress += sizeof(long);
+  EEPROM.put(eeAddress, newCalib);
+  Serial.println("Data stored to EEPROM.");
+  Serial.println("\n--------------------------------\n");
+  delay(500);
 }
 
 // loop() runs over and over again, as quickly as it can execute.
 void loop()
 {
+
   // Read data from the GPS in the 'main loop'
   char c = GPS.read();
 
@@ -168,27 +317,34 @@ void loop()
       return;                       // we can fail to parse a sentence in which case we should just wait for another
   }
 
-  // If we're moving, publish at intervalMinutesMoving
-  // otherwise publish at intervalMinutesNotMoving
-  if (GPS.fix && GPS.speed >= movingThreshold)
+  // Display update
+  if (millis() - lastScreenUpdate > intervalScreenupdate)
   {
-    if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
-    {
-      publishFix("update");
-      // Remember when we published
-      lastPublish = millis();
-    }
-  }
-  else if (GPS.fix && millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
-  {
-    publishFix("update");
-    // Remember when we published
-    lastPublish = millis();
+    displayTelemetry();
   }
 
-  // Hardware reset at midnight
-  if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
-  { // Midnight local
-    System.reset();
+  if (GPS.fix)
+  {
+    // If we're moving, publish at intervalMinutesMoving
+    // otherwise publish at intervalMinutesNotMoving
+    if (GPS.speed >= movingThreshold)
+    {
+      if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
+      {
+        publishFix("update");
+      }
+    }
+    else if (millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
+    {
+      publishFix("update");
+    }
+
+    if (millis())
+
+      // Hardware reset at midnight local
+      if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
+      {
+        System.reset();
+      }
   }
 }
