@@ -5,35 +5,27 @@
  * Date: 2019-02-27
  */
 
-#include <Adafruit_GPS.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055_Photon.h>
 #include <Adafruit_MCP9808.h>
 #include <Adafruit_SSD1306.h>
+#include <AssetTrackerRK.h>
 
 #include "Particle.h"
 
-int transmitMode(String command);
-void displayTelemetry(void);
-int publishFix(String command);
-void displayCalStatus(void);
-void displaySensorOffsets(const adafruit_bno055_offsets_t &calibData);
 void setup();
 void loop();
+void displayGPSInfo();
+void displayTelemetry(void);
+int publishFix(String command);
+void calibrateBno(void);
+void displayCalStatus(void);
+void displaySensorOffsets(const adafruit_bno055_offsets_t &calibData);
 #line 16 "/Users/212320392/workspace/pete/AssetTrackerDevice/src/AssetTrackerDevice.ino"
 SYSTEM_MODE(AUTOMATIC);
 SYSTEM_THREAD(ENABLED);
 
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
-#define BNO055_SAMPLERATE_DELAY_MS (1000)
-
-Adafruit_MCP9808 mcp = Adafruit_MCP9808();
-
 #define OLED_RESET D4
-Adafruit_SSD1306 display(OLED_RESET);
-
-// what's the name of the hardware serial port?
-#define GPSSerial Serial1
 
 // What ports are we using for GPIO input?
 int measurement1Pin = A0;
@@ -42,13 +34,6 @@ int measurement2Pin = A1;
 // Calibrations for measuting voltage on the measurement pins
 float pin1Cal = 249.965;
 float pin2Cal = 250;
-
-// Connect to the GPS on the hardware port
-Adafruit_GPS GPS(&GPSSerial);
-
-// Set GPSECHO to 'false' to turn off echoing the GPS data to the Serial console
-// Set to 'true' if you want to debug and listen to the raw GPS sentences
-#define GPSECHO false
 
 // Set whether you want the device to publish data to the internet by default here.
 // 1 will Particle.publish AND Serial.print, 0 will just Serial.print
@@ -62,6 +47,9 @@ float intervalScreenupdate = 2000;
 
 // Used to keep track of the last time we published data
 long lastPublish = 0;
+unsigned long lastSerial = 0;
+unsigned long startFix = 0;
+bool gettingFix = false;
 
 // How long between publishes if the tracker isn't moving
 float intervalMinutesNotMoving = 15;
@@ -72,150 +60,183 @@ float intervalMinutesMoving = 0.5;
 // Speed threshold to switch between intervalMinutesNotMoving and intervalMinutesMoving
 float movingThreshold = 0.75;
 
-// Allows you to remotely change whether a device is publishing to the cloud
-// or is only reporting data over Serial. Saves data when using only Serial!
-// Change the default at the top of the code.
-int transmitMode(String command)
-{
-  transmittingData = atoi(command);
-  return 1;
-}
+const unsigned long PUBLISH_PERIOD = 120000;
+const unsigned long SERIAL_PERIOD = 2000;
+// ==============================================================================
+// DEFINE HARDWARE
+AssetTracker t;
+Adafruit_SSD1306 display(OLED_RESET);
+Adafruit_MCP9808 mcp = Adafruit_MCP9808();
+Adafruit_BNO055 bno = Adafruit_BNO055(55);
 
-void displayTelemetry(void)
-{
-  // Reset the timer
-  lastScreenUpdate = millis();
-  // display.clearDisplay();
-  // display.setCursor(0, 0);
-  // display.println("T1: " + String(mcp.readTempC(), 2));
-  // display.display();
-}
-
-// Actively ask for a full fix reading if you're impatient.
-int publishFix(String command)
-{
-
-  // Reset the lastPublish counter
-  lastPublish = millis();
-
-  // Get a new sensor event
-  sensors_event_t event;
-  bno.getEvent(&event);
-
-  String pubStr = String(GPS.lat) + String(',') + String(GPS.latitude) + String(',') + String(GPS.lon) + String(',') + String(GPS.longitude) + String(',') + String(GPS.speed, 1) + String(',') + String(GPS.angle, 0) + String(',') + String(GPS.fixquality) + String(',') + String(event.orientation.x, 0) + String(',') + String(event.orientation.y, 0) + String(',') + String(event.orientation.z, 0) + String(',') + String(mcp.readTempC(), 2) + String(',') + String(analogRead(measurement1Pin) / pin1Cal, 2) + String(',') + String(analogRead(measurement2Pin) / pin2Cal, 2);
-
-  Serial.println(pubStr);
-
-  Particle.publish("fix", pubStr, 60, PRIVATE);
-
-  return 1;
-}
-
-/**************************************************************************/
-/*
-    Display sensor calibration status
-    */
-/**************************************************************************/
-void displayCalStatus(void)
-{
-  /* Get the four calibration values (0..3) */
-  /* Any sensor data reporting 0 should be ignored, */
-  /* 3 means 'fully calibrated" */
-  uint8_t system, gyro, accel, mag;
-  system = gyro = accel = mag = 0;
-  bno.getCalibration(&system, &gyro, &accel, &mag);
-
-  /* The data should be ignored until the system calibration is > 0 */
-  Serial.print("\t");
-  if (!system)
-  {
-    Serial.print("! ");
-  }
-
-  /* Display the individual values */
-  Serial.print("Sys:");
-  Serial.print(system, DEC);
-  Serial.print(" G:");
-  Serial.print(gyro, DEC);
-  Serial.print(" A:");
-  Serial.print(accel, DEC);
-  Serial.print(" M:");
-  Serial.print(mag, DEC);
-}
-
-/**************************************************************************/
-/*
-    Display the raw calibration offset and radius data
-    */
-/**************************************************************************/
-void displaySensorOffsets(const adafruit_bno055_offsets_t &calibData)
-{
-  Serial.print("Accelerometer: ");
-  Serial.print(calibData.accel_offset_x);
-  Serial.print(" ");
-  Serial.print(calibData.accel_offset_y);
-  Serial.print(" ");
-  Serial.print(calibData.accel_offset_z);
-  Serial.print(" ");
-
-  Serial.print("\nGyro: ");
-  Serial.print(calibData.gyro_offset_x);
-  Serial.print(" ");
-  Serial.print(calibData.gyro_offset_y);
-  Serial.print(" ");
-  Serial.print(calibData.gyro_offset_z);
-  Serial.print(" ");
-
-  Serial.print("\nMag: ");
-  Serial.print(calibData.mag_offset_x);
-  Serial.print(" ");
-  Serial.print(calibData.mag_offset_y);
-  Serial.print(" ");
-  Serial.print(calibData.mag_offset_z);
-  Serial.print(" ");
-
-  Serial.print("\nAccel Radius: ");
-  Serial.print(calibData.accel_radius);
-
-  Serial.print("\nMag Radius: ");
-  Serial.print(calibData.mag_radius);
-}
-
-// setup() runs once, when the device is first turned on.
+// ==============================================================================
+// SETUP (RUNS ONCE)
 void setup()
 {
 
-  // These functions exposed via the cloud API
-  Particle.function("tmode", transmitMode);
+  // ==============================================================================
+  // FUNCTIONS SETUP
   Particle.function("fix", publishFix);
 
-  // connect at 115200 so we can read the GPS fast enough and echo without dropping chars
-  // also spit it out
-  Serial.begin(115200);
-  Serial.println("Adafruit GPS library basic test!");
+  // ==============================================================================
+  // DISPLAY SETUP
 
-  // 9600 NMEA is the default baud rate for Adafruit MTK GPS's- some use 4800
-  GPS.begin(9600);
-  // uncomment this line to turn on RMC (recommended minimum) and GGA (fix data) including altitude
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  // uncomment this line to turn on only the "minimum recommended" data
-  // GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-  // For parsing data, we don't suggest using anything but either RMC only or RMC+GGA since
-  // the parser doesn't care about other sentences at this time
-  // Set the update rate
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
+  // ==============================================================================
+  // GPS SETUP
 
-  // Request updates on antenna status, comment out to keep quiet
-  GPS.sendCommand(PGCMD_ANTENNA);
+  Serial.begin();
 
-  // MCP9808 sensor setup
+  // Turn on GPS module
+  t.gpsOn();
+
+  // Run in threaded mode - this eliminates the need to read Serial1 from loop or updateGPS() and dramatically
+  // lowers the risk of lost or corrupted GPS data caused by blocking loop for too long and overflowing the
+  // 64-byte serial buffer.
+  t.startThreadedMode();
+
+  startFix = millis();
+  gettingFix = true;
+
+  // ==============================================================================
+  // MCP9808 SETUP
+
   while (!mcp.begin())
   {
     Serial.println("Ooops, no MCP9808 detected ... Check your wiring or I2C ADDR");
     delay(1000);
   }
 
-  /* BNO55 sensor setup */
+  // ==============================================================================
+  // BNO55 sensor setup
+  calibrateBno();
+}
+
+// ==============================================================================
+// MAIN PROGRAM LOOP
+
+void loop()
+{
+
+  // ==============================================================================
+  // DISPLAY DATA
+  if (millis() - lastScreenUpdate > intervalScreenupdate)
+  {
+    displayTelemetry();
+  }
+
+  // ==============================================================================
+  // GPS DATA
+  displayGPSInfo();
+
+  if (Particle.connected())
+  {
+    if (millis() - lastPublish >= PUBLISH_PERIOD)
+    {
+      lastPublish = millis();
+      // Particle.publish("gps", buf, PRIVATE);
+    }
+  }
+
+  // if (GPS.fix)
+  // {
+  //   // If we're moving, publish at intervalMinutesMoving
+  //   // otherwise publish at intervalMinutesNotMoving
+  //   if (GPS.speed >= movingThreshold)
+  //   {
+  //     if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
+  //     {
+  //       publishFix("update");
+  //     }
+  //   }
+  //   else if (millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
+  //   {
+  //     publishFix("update");
+  //   }
+
+  //   if (millis())
+
+  //     // Hardware reset at midnight local
+  //     if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
+  //     {
+  //       System.reset();
+  //     }
+  // }
+}
+
+// ==============================================================================
+// FUNCTIONS
+
+/**************************************************************************/
+/* Display some GPS Data */
+/**************************************************************************/
+void displayGPSInfo()
+{
+  if (millis() - lastSerial >= SERIAL_PERIOD)
+  {
+    lastSerial = millis();
+    if (t.gpsFix())
+    {
+      String fix = String(t.readLatDeg()) + String(',') + String(t.readLonDeg()) + String(',') + String(t.getTinyGPSPlus()->speed.knots(), 1) + String(',') + String(t.getTinyGPSPlus()->course.deg(), 0) + String(',') + String(t.getSatellites());
+      Serial.println(fix);
+      if (gettingFix)
+      {
+        gettingFix = false;
+        unsigned long elapsed = millis() - startFix;
+        Serial.printlnf("%lu milliseconds to get GPS fix", elapsed);
+      }
+    }
+    else
+    {
+      Serial.println("no location satellites:" + String(t.getSatellites()));
+      if (!gettingFix)
+      {
+        gettingFix = true;
+        startFix = millis();
+      }
+    }
+  }
+}
+
+/**************************************************************************/
+/* Show Current Stats on the Display */
+/**************************************************************************/
+void displayTelemetry(void)
+{
+  // Reset the timer
+  lastScreenUpdate = millis();
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("T1: " + String(mcp.readTempC(), 2));
+  display.display();
+}
+
+/**************************************************************************/
+/* Actively ask for a full fix reading if you're impatient. */
+/**************************************************************************/
+int publishFix(String command)
+{
+
+  // // Reset the lastPublish counter
+  // lastPublish = millis();
+
+  // // Get a new sensor event
+  // sensors_event_t event;
+  // bno.getEvent(&event);
+
+  // String pubStr = String(GPS.lat) + String(',') + String(GPS.latitude) + String(',') + String(GPS.lon) + String(',') + String(GPS.longitude) + String(',') + String(GPS.speed, 1) + String(',') + String(GPS.angle, 0) + String(',') + String(GPS.fixquality) + String(',') + String(event.orientation.x, 0) + String(',') + String(event.orientation.y, 0) + String(',') + String(event.orientation.z, 0) + String(',') + String(mcp.readTempC(), 2) + String(',') + String(analogRead(measurement1Pin) / pin1Cal, 2) + String(',') + String(analogRead(measurement2Pin) / pin2Cal, 2);
+
+  // Serial.println(pubStr);
+
+  // Particle.publish("fix", pubStr, 60, PRIVATE);
+
+  // return 1;
+}
+
+/**************************************************************************/
+/* Set up the BNO55 Sensor */
+/**************************************************************************/
+void calibrateBno(void)
+{
   Serial.println("Orientation Sensor Test");
   Serial.println("");
   if (!bno.begin())
@@ -281,7 +302,7 @@ void setup()
       Serial.println("");
 
       /* Wait the specified delay before requesting new data */
-      delay(BNO055_SAMPLERATE_DELAY_MS);
+      delay(1000);
     }
   }
 
@@ -306,53 +327,68 @@ void setup()
   delay(500);
 }
 
-// loop() runs over and over again, as quickly as it can execute.
-void loop()
+/**************************************************************************/
+/* Display sensor calibration status */
+/**************************************************************************/
+void displayCalStatus(void)
 {
+  /* Get the four calibration values (0..3) */
+  /* Any sensor data reporting 0 should be ignored, */
+  /* 3 means 'fully calibrated" */
+  uint8_t system, gyro, accel, mag;
+  system = gyro = accel = mag = 0;
+  bno.getCalibration(&system, &gyro, &accel, &mag);
 
-  // Read data from the GPS in the 'main loop'
-  char c = GPS.read();
-
-  // if a sentence is received, we can check the checksum, parse it...
-  if (GPS.newNMEAreceived())
+  /* The data should be ignored until the system calibration is > 0 */
+  Serial.print("\t");
+  if (!system)
   {
-    // a tricky thing here is if we print the NMEA sentence, or data
-    // we end up not listening and catching other sentences!
-    // so be very wary if using OUTPUT_ALLDATA and trytng to print out data
-    Serial.println(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
-
-    if (!GPS.parse(GPS.lastNMEA())) // this also sets the newNMEAreceived() flag to false
-      return;                       // we can fail to parse a sentence in which case we should just wait for another
+    Serial.print("! ");
   }
 
-  // Display update
-  if (millis() - lastScreenUpdate > intervalScreenupdate)
-  {
-    displayTelemetry();
-  }
+  /* Display the individual values */
+  Serial.print("Sys:");
+  Serial.print(system, DEC);
+  Serial.print(" G:");
+  Serial.print(gyro, DEC);
+  Serial.print(" A:");
+  Serial.print(accel, DEC);
+  Serial.print(" M:");
+  Serial.print(mag, DEC);
+}
 
-  if (GPS.fix)
-  {
-    // If we're moving, publish at intervalMinutesMoving
-    // otherwise publish at intervalMinutesNotMoving
-    if (GPS.speed >= movingThreshold)
-    {
-      if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
-      {
-        publishFix("update");
-      }
-    }
-    else if (millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
-    {
-      publishFix("update");
-    }
+/**************************************************************************/
+/* Display the raw calibration offset and radius data */
+/**************************************************************************/
+void displaySensorOffsets(const adafruit_bno055_offsets_t &calibData)
+{
+  Serial.print("Accelerometer: ");
+  Serial.print(calibData.accel_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.accel_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.accel_offset_z);
+  Serial.print(" ");
 
-    if (millis())
+  Serial.print("\nGyro: ");
+  Serial.print(calibData.gyro_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.gyro_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.gyro_offset_z);
+  Serial.print(" ");
 
-      // Hardware reset at midnight local
-      if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
-      {
-        System.reset();
-      }
-  }
+  Serial.print("\nMag: ");
+  Serial.print(calibData.mag_offset_x);
+  Serial.print(" ");
+  Serial.print(calibData.mag_offset_y);
+  Serial.print(" ");
+  Serial.print(calibData.mag_offset_z);
+  Serial.print(" ");
+
+  Serial.print("\nAccel Radius: ");
+  Serial.print(calibData.accel_radius);
+
+  Serial.print("\nMag Radius: ");
+  Serial.print(calibData.mag_radius);
 }
