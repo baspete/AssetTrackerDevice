@@ -8,7 +8,6 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055_Photon.h>
 #include <Adafruit_MCP9808.h>
-#include <Adafruit_SSD1306.h>
 #include <AssetTrackerRK.h>
 
 #include "Particle.h"
@@ -56,7 +55,6 @@ const unsigned long SERIAL_PERIOD = 2000;
 // ==============================================================================
 // DEFINE HARDWARE
 AssetTracker t;
-Adafruit_SSD1306 display(OLED_RESET);
 Adafruit_MCP9808 mcp = Adafruit_MCP9808();
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
 
@@ -109,49 +107,36 @@ void loop()
 {
 
   // ==============================================================================
-  // DISPLAY DATA
-  if (millis() - lastScreenUpdate > intervalScreenupdate)
-  {
-    displayTelemetry();
-  }
-
-  // ==============================================================================
   // GPS DATA
-  displayGPSInfo();
 
-  if (Particle.connected())
-  {
-    if (millis() - lastPublish >= PUBLISH_PERIOD)
-    {
-      lastPublish = millis();
-      // Particle.publish("gps", buf, PRIVATE);
-    }
-  }
-
-  // if (GPS.fix)
+  // Dump data to serial port at SERIAL_PERIOD
+  // if (millis() - lastSerial >= SERIAL_PERIOD)
   // {
-  //   // If we're moving, publish at intervalMinutesMoving
-  //   // otherwise publish at intervalMinutesNotMoving
-  //   if (GPS.speed >= movingThreshold)
-  //   {
-  //     if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
-  //     {
-  //       publishFix("update");
-  //     }
-  //   }
-  //   else if (millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
-  //   {
-  //     publishFix("update");
-  //   }
-
-  //   if (millis())
-
-  //     // Hardware reset at midnight local
-  //     if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
-  //     {
-  //       System.reset();
-  //     }
+  //   displaySystemInfo();
   // }
+
+  if (Particle.connected() && t.gpsFix())
+  {
+    // If we're moving, publish at intervalMinutesMoving
+    // otherwise publish at intervalMinutesNotMoving
+    if (t.getTinyGPSPlus()->speed.knots() >= movingThreshold)
+    {
+      if (millis() - lastPublish > intervalMinutesMoving * 60 * 1000)
+      {
+        publishFix("update");
+      }
+    }
+    else if (millis() - lastPublish > intervalMinutesNotMoving * 60 * 1000)
+    {
+      publishFix("update");
+    }
+
+    // Hardware reset at midnight local
+    // if (GPS.hour == 8 && GPS.minute == 0 && GPS.seconds == 0)
+    // {
+    //   System.reset();
+    // }
+  }
 }
 
 // ==============================================================================
@@ -160,45 +145,34 @@ void loop()
 /**************************************************************************/
 /* Display some GPS Data */
 /**************************************************************************/
-void displayGPSInfo()
+void displaySystemInfo()
 {
-  if (millis() - lastSerial >= SERIAL_PERIOD)
-  {
-    lastSerial = millis();
-    if (t.gpsFix())
-    {
-      String fix = String(t.readLatDeg()) + String(',') + String(t.readLonDeg()) + String(',') + String(t.getTinyGPSPlus()->speed.knots(), 1) + String(',') + String(t.getTinyGPSPlus()->course.deg(), 0) + String(',') + String(t.getSatellites());
-      Serial.println(fix);
-      if (gettingFix)
-      {
-        gettingFix = false;
-        unsigned long elapsed = millis() - startFix;
-        Serial.printlnf("%lu milliseconds to get GPS fix", elapsed);
-      }
-    }
-    else
-    {
-      Serial.println("no location satellites:" + String(t.getSatellites()));
-      if (!gettingFix)
-      {
-        gettingFix = true;
-        startFix = millis();
-      }
-    }
-  }
-}
+  lastSerial = millis();
 
-/**************************************************************************/
-/* Show Current Stats on the Display */
-/**************************************************************************/
-void displayTelemetry(void)
-{
-  // Reset the timer
-  lastScreenUpdate = millis();
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("T1: " + String(mcp.readTempC(), 2));
-  display.display();
+  // Get a new sensor event
+  sensors_event_t event;
+  bno.getEvent(&event);
+
+  // GPS Data
+  Serial.println("==========================================");
+  Serial.println("Connected: " + String(Particle.connected()));
+  // if (t.gpsFix())
+  // {
+  //   Serial.println("Satellites: " + String(t.getSatellites()));
+  //   Serial.println("Location: " + String(t.readLatDeg()) + String(',') + String(t.readLonDeg()));
+  //   Serial.println("Speed: " + String(t.getTinyGPSPlus()->speed.knots(), 1));
+  //   Serial.println("Course: " + String(t.getTinyGPSPlus()->course.deg(), 0));
+  // }
+  // else
+  // {
+  //   Serial.println("No Satellites:" + String(t.getSatellites()));
+  // }
+
+  // // Sensor data
+  Serial.println("Orientation:" + String(event.orientation.x, 0) + String(',') + String(event.orientation.y, 0) + String(',') + String(event.orientation.z, 0));
+  Serial.println("T1: " + String(mcp.readTempC(), 2));
+  Serial.println("V1: " + String(analogRead(measurement1Pin) / pin1Cal, 2));
+  Serial.println("V2: " + String(analogRead(measurement2Pin) / pin2Cal, 2));
 }
 
 /**************************************************************************/
@@ -206,21 +180,30 @@ void displayTelemetry(void)
 /**************************************************************************/
 int publishFix(String command)
 {
+  // Reset the lastPublish counter
+  lastPublish = millis();
 
-  // // Reset the lastPublish counter
-  // lastPublish = millis();
+  // Get a new sensor event
+  sensors_event_t event;
+  bno.getEvent(&event);
 
-  // // Get a new sensor event
-  // sensors_event_t event;
-  // bno.getEvent(&event);
-
-  // String pubStr = String(GPS.lat) + String(',') + String(GPS.latitude) + String(',') + String(GPS.lon) + String(',') + String(GPS.longitude) + String(',') + String(GPS.speed, 1) + String(',') + String(GPS.angle, 0) + String(',') + String(GPS.fixquality) + String(',') + String(event.orientation.x, 0) + String(',') + String(event.orientation.y, 0) + String(',') + String(event.orientation.z, 0) + String(',') + String(mcp.readTempC(), 2) + String(',') + String(analogRead(measurement1Pin) / pin1Cal, 2) + String(',') + String(analogRead(measurement2Pin) / pin2Cal, 2);
-
-  // Serial.println(pubStr);
-
-  // Particle.publish("fix", pubStr, 60, PRIVATE);
-
-  // return 1;
+  if (t.gpsFix())
+  {
+    String pubStr = String(t.readLatDeg()) + String(',') + String(t.readLonDeg()) + String(',') + String(t.getTinyGPSPlus()->speed.knots(), 1) + String(',') + String(t.getTinyGPSPlus()->course.deg(), 0) + String(',') + String(t.getSatellites()) + String(',') + String(event.orientation.x, 0) + String(',') + String(event.orientation.y, 0) + String(',') + String(event.orientation.z, 0) + String(',') + String(mcp.readTempC(), 2) + String(',') + String(analogRead(measurement1Pin) / pin1Cal, 2) + String(',') + String(analogRead(measurement2Pin) / pin2Cal, 2);
+    Serial.println(pubStr);
+    Particle.publish("fix", pubStr, 60, PRIVATE);
+    return 1;
+  }
+  else
+  {
+    Serial.println("no location satellites:" + String(t.getSatellites()));
+    if (!gettingFix)
+    {
+      gettingFix = true;
+      startFix = millis();
+    }
+    return 0;
+  }
 }
 
 /**************************************************************************/
